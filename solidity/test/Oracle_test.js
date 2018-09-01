@@ -104,10 +104,12 @@ contract('Oracle', () => {
 
   describe('#requestData', () => {
     context('when called through the LINK token', () => {
+      const paid = 100
       let log, tx
+
       beforeEach(async () => {
         let args = h.requestDataBytes(specId, to, fHash, 'id', '')
-        tx = await h.requestDataFrom(oc, link, 0, args)
+        tx = await h.requestDataFrom(oc, link, paid, args)
         assert.equal(3, tx.receipt.logs.length)
 
         log = tx.receipt.logs[2]
@@ -115,6 +117,7 @@ contract('Oracle', () => {
 
       it('logs an event', async () => {
         assert.equal(specId, web3.toUtf8(log.topics[2]))
+        assert.equal(paid, web3.toDecimal(log.topics[3]))
       })
 
       it('uses the expected event signature', async () => {
@@ -127,7 +130,7 @@ contract('Oracle', () => {
     context('when not called through the LINK token', () => {
       it('reverts', async () => {
         await h.assertActionThrows(async () => {
-          await oc.requestData(1, specId, to, fHash, 'id', '', {from: h.oracleNode})
+          await oc.requestData(0, 0, 1, specId, to, fHash, 'id', '', {from: h.oracleNode})
         })
       })
     })
@@ -137,7 +140,7 @@ contract('Oracle', () => {
     let mock, internalId
     let requestId = 'XID'
 
-    context('successful consumer', () => {
+    context('cooperative consumer', () => {
       beforeEach(async () => {
         mock = await h.deploy('examples/GetterSetter.sol')
         let fHash = h.functionSelector('requestedBytes32(bytes32,bytes32)')
@@ -183,11 +186,13 @@ contract('Oracle', () => {
     context('malicious consumer', () => {
       const paymentAmount = h.toWei(1)
 
+      beforeEach(async () => {
+        mock = await h.deploy('examples/MaliciousConsumer.sol', link.address, oc.address)
+        await link.transfer(mock.address, paymentAmount)
+      })
+
       context('fails during fulfillment', () => {
         beforeEach(async () => {
-          mock = await h.deploy('examples/MaliciousConsumer.sol', link.address, oc.address)
-          await link.transfer(mock.address, paymentAmount)
-
           const req = await mock.requestData('assertFail(bytes32,bytes32)')
           internalId = req.receipt.logs[2].topics[1]
         })
@@ -213,9 +218,6 @@ contract('Oracle', () => {
 
       context('calls selfdestruct', () => {
         beforeEach(async () => {
-          mock = await h.deploy('examples/MaliciousConsumer.sol', link.address, oc.address)
-          await link.transfer(mock.address, paymentAmount)
-
           const req = await mock.requestData('doesNothing(bytes32,bytes32)')
           internalId = req.receipt.logs[2].topics[1]
           await mock.remove()
@@ -235,9 +237,6 @@ contract('Oracle', () => {
 
       context('request is canceled during fulfillment', () => {
         beforeEach(async () => {
-          mock = await h.deploy('examples/MaliciousConsumer.sol', link.address, oc.address)
-          await link.transfer(mock.address, paymentAmount)
-
           const req = await mock.requestData('cancelRequestOnFulfill(bytes32,bytes32)')
           internalId = req.receipt.logs[2].topics[1]
 
@@ -264,6 +263,15 @@ contract('Oracle', () => {
           await h.assertActionThrows(async () => {
             await oc.fulfillData(internalId, 'hack the planet 102', {from: h.oracleNode})
           })
+        })
+      })
+
+      context('lies about amount sent', () => {
+        it('reports the correct amount of LINK paid', async () => {
+          const req = await mock.requestData('assertFail(bytes32,bytes32)')
+          const log = req.receipt.logs[2]
+
+          assert.equal(web3.toWei(1), web3.toDecimal(log.topics[3]))
         })
       })
     })
